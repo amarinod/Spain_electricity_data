@@ -1,0 +1,319 @@
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.widgets import Slider, RadioButtons
+from matplotlib.widgets import CheckButtons
+
+# === Load datasets ===
+past_df = pd.read_csv("/Users/andreinamarino/Documents/Urban Solar/UNSURE_Spain_Prices_DataSet.csv")
+past_df['datetime'] = pd.to_datetime(past_df['datetime'], utc=True, errors='coerce')
+past_df = past_df.dropna(subset=['datetime'])
+past_df['hour'] = past_df['datetime'].dt.hour
+past_df['month'] = past_df['datetime'].dt.month
+past_df['dayofweek'] = past_df['datetime'].dt.dayofweek
+past_df['year'] = past_df['datetime'].dt.year.astype(int)
+
+future_df = pd.read_csv("/Users/andreinamarino/Downloads/Spain Electricity Rates Charts/Prediction_Spain_prices_dataset.csv", header=None)
+future_df.columns = ['datetime', 'value']
+future_df['datetime'] = pd.to_datetime(future_df['datetime'], utc=True, errors='coerce')
+future_df = future_df.dropna(subset=['datetime'])
+future_df['hour'] = future_df['datetime'].dt.hour
+future_df['month'] = future_df['datetime'].dt.month
+future_df['dayofweek'] = future_df['datetime'].dt.dayofweek
+future_df['year'] = future_df['datetime'].dt.year.astype(int)
+
+past_min, past_max = past_df['year'].min(), past_df['year'].max()
+future_min, future_max = future_df['year'].min(), future_df['year'].max()
+
+plt.rcParams.update({
+    'figure.facecolor': '#FAFAFA',
+    'axes.facecolor': '#FFFFFF',
+    'axes.edgecolor': '#DDDDDD',
+    'axes.labelcolor': '#1A1A1A',
+    'xtick.color': '#4D4D4D',
+    'ytick.color': '#4D4D4D',
+    'text.color': '#1A1A1A',
+    'font.family': 'DejaVu Sans',
+    'font.size': 11,
+    'axes.titleweight': 'bold',
+    'axes.titlesize': 13,
+})
+
+fig, axs = plt.subplots(2, 1, figsize=(14, 10))
+plt.subplots_adjust(bottom=0.45, left=0.25, hspace=0.5)
+
+slider_ax1 = plt.axes([0.25, 0.3, 0.65, 0.02])
+slider_ax2 = plt.axes([0.25, 0.25, 0.65, 0.02])
+slider_ax3 = plt.axes([0.25, 0.2, 0.65, 0.02])
+data_radio_ax = plt.axes([0.02, 0.82, 0.18, 0.1])
+view_radio_ax = plt.axes([0.02, 0.63, 0.18, 0.15])
+mode_radio_ax = plt.axes([0.02, 0.44, 0.18, 0.15])
+inflation_ax = plt.axes([0.02, 0.37, 0.18, 0.05])
+
+
+
+slider_start = slider_end = None
+slider_spread = Slider(slider_ax3, 'Battery hours', 0, 4, valinit=3, valstep=1)
+data_radio = RadioButtons(data_radio_ax, ['Past Data', 'Future Projections'], active=0)
+view_radio = RadioButtons(view_radio_ax, ['Main View', 'Yearly Spread'], active=0)
+mode_radio = RadioButtons(mode_radio_ax, ['Daily', 'Monthly', 'Day of Week'], active=0)
+inflation_checkbox = CheckButtons(inflation_ax, ['Apply 2% Inflation'], [False])
+
+def find_ordered_spreads(series, count=3):
+    pairs, used_lows, used_highs = [], set(), set()
+    for _ in range(count):
+        max_spread, selected = -1, None
+        for low_hr in series.index:
+            if low_hr in used_lows: continue
+            for high_hr in series.index:
+                if high_hr <= low_hr or high_hr in used_highs: continue
+                spread = series[high_hr] - series[low_hr]
+                if spread > max_spread:
+                    max_spread = spread
+                    selected = (spread, low_hr, series[low_hr], high_hr, series[high_hr])
+        if selected:
+            pairs.append(selected)
+            _, low_hr, _, high_hr, _ = selected
+            used_lows.add(low_hr)
+            used_highs.add(high_hr)
+    return pairs
+
+def create_year_sliders(min_y, max_y):
+    global slider_start, slider_end
+    slider_ax1.clear()
+    slider_ax2.clear()
+    slider_start = Slider(slider_ax1, 'Start Year', min_y, max_y, valinit=min_y, valstep=1)
+    slider_end = Slider(slider_ax2, 'End Year', min_y, max_y, valinit=max_y, valstep=1)
+    slider_start.on_changed(update)
+    slider_end.on_changed(update)
+
+def update(val):
+    df = past_df if data_radio.value_selected == 'Past Data' else future_df
+    apply_inflation = inflation_checkbox.get_status()[0]
+    view = view_radio.value_selected
+    mode = mode_radio.value_selected
+    start, end = int(slider_start.val), int(slider_end.val)
+    count = int(slider_spread.val)
+
+    for ax in axs:
+        ax.clear()
+        ax.set_visible(True)
+    if data_radio.value_selected == 'Future Projections' and apply_inflation:
+        df = df.copy()
+        base_year = future_min
+        df['value'] *= (1.02 ** (df['year'] - base_year))
+
+    df_filtered = df[(df['year'] >= start) & (df['year'] <= end)]
+    if df_filtered.empty:
+        axs[0].set_title("No data for selected years")
+        axs[1].set_visible(False)
+        fig.canvas.draw_idle()
+        return
+
+    if mode == 'Daily':
+        group = df_filtered.groupby('hour')['value'].mean()
+        x_ticks = range(24)
+        x_label = "Hour of Day (UTC)"
+    elif mode == 'Monthly':
+        group = df_filtered.groupby('month')['value'].mean()
+        x_ticks = range(1, 13)
+        x_label = "Month"
+    else:
+        group = df_filtered.groupby('dayofweek')['value'].mean()
+        x_ticks = range(7)
+        x_label = "Day of Week (0=Mon)"
+
+    axs[0].plot(group.index, group.values, color='#0072CE', marker='o')
+    for i, v in group.items():
+        axs[0].text(i, v + 0.5, f"{v:.0f}", ha='center', fontsize=8)
+
+    avg_price = group.mean()
+    axs[0].axhline(avg_price, color='#00A573', linestyle='--', linewidth=2, label=f"Avg: {avg_price:.1f}")
+    axs[0].set_title(f"{mode} Average Electricity Prices ({start}–{end})")
+    axs[0].set_xticks(x_ticks)
+    axs[0].set_xlabel(x_label)
+    axs[0].set_ylabel("€/MWh")
+    axs[0].grid(True, linestyle='--', alpha=0.5)
+    axs[0].legend()
+
+
+    if view == 'Main View':
+        morning = group.loc[0:11] if mode == 'Daily' else group
+        afternoon = group.loc[12:23] if mode == 'Daily' else group
+        morning_pairs = find_ordered_spreads(morning, count)
+        afternoon_pairs = find_ordered_spreads(afternoon, count)
+        all_pairs = morning_pairs + afternoon_pairs
+
+        morning_spread_sum = sum(p[0] for p in morning_pairs)
+        afternoon_spread_sum = sum(p[0] for p in afternoon_pairs)
+        morning_spread_avg = morning_spread_sum/count if count else 0
+        afternoon_spread_avg = afternoon_spread_sum/count if count else 0
+        #total_spread_sum = (morning_spread_sum + afternoon_spread_sum)/(count*2) if count else 0
+        total_spread_sum = morning_spread_avg + afternoon_spread_avg
+        colors = ['#A2D5AB', '#66C2A5', '#B2E2E2', '#80B1D3', '#FDB462', '#FB8072']
+        for i, (spread, low_hr, low_val, high_hr, high_val) in enumerate(all_pairs):
+            base = colors[i % len(colors)]
+            axs[1].bar(low_hr, low_val, color=base, width=0.55)
+            axs[1].bar(low_hr, spread, bottom=low_val, color='#00A573', width=0.55)
+            axs[1].bar(high_hr, high_val, color=base, width=0.55)
+            axs[1].text(low_hr, low_val - 2, f"L:{low_val:.0f}", ha='center', fontsize=8)
+            axs[1].text(low_hr, low_val + spread + 1.5, f"S:{spread:.0f}", ha='center', fontsize=8)
+            axs[1].text(high_hr, high_val + 2, f"H:{high_val:.0f}", ha='center', fontsize=8)
+
+        axs[1].set_title(f"Top {count} Spreads")
+        axs[1].set_xticks(x_ticks)
+        axs[1].set_xlabel(x_label)
+        axs[1].set_ylabel("€/MWh")
+        axs[1].grid(True, linestyle='--', alpha=0.5)
+
+        
+        if mode == 'Daily':
+            text_y = axs[1].get_ylim()[1]
+            axs[1].text(23.5, text_y - 65,
+                f"Morning Total: {morning_spread_avg:.1f}\nAfternoon Total: {afternoon_spread_avg:.1f}\nCombined: {total_spread_sum:.1f}",
+                fontsize=9, ha='right', va='top', bbox=dict(facecolor='white', edgecolor='gray', alpha=0.8))
+        elif ((mode == 'Monthly') or (mode == 'Day of Week')): 
+            text_y = axs[1].get_ylim()[1]
+            axs[1].text(max(x_ticks), text_y - 10,
+                f"Combined Avg Spread: {total_spread_sum:.1f}",
+                fontsize=9, ha='right', va='top', bbox=dict(facecolor='white', edgecolor='gray', alpha=0.8))
+
+    elif view == 'Yearly Spread':
+        axs[1].set_visible(True)
+
+        if mode == 'Daily':
+        # SAME AS BEFORE: average spread per year
+            years = sorted(df_filtered['year'].unique())
+            avg_spreads = []
+
+            for y in years:
+                sub = df_filtered[df_filtered['year'] == y]
+                if sub.empty:
+                    avg_spreads.append(0)
+                    continue
+                group = sub.groupby('hour')['value'].mean()
+                morning = group.loc[0:11]
+                afternoon = group.loc[12:23]
+                morning_pairs = find_ordered_spreads(morning, count)
+                afternoon_pairs = find_ordered_spreads(afternoon, count)
+                total = morning_pairs + afternoon_pairs
+                avg = sum(p[0] for p in total) / len(total) if total else 0
+                avg_spreads.append(avg)
+
+            axs[1].plot(years, avg_spreads, marker='o', color='#0052A5')
+            for x, y in zip(years, avg_spreads):
+                axs[1].text(x, y + 0.5, f"{y:.1f}", ha='center', fontsize=8)
+
+            mean_spread = sum(avg_spreads) / len(avg_spreads) if avg_spreads else 0
+            axs[1].axhline(mean_spread, color='#00A573', linestyle='--', linewidth=2, label=f"Avg: {mean_spread:.1f}")
+            axs[1].set_title("Yearly Average of Selected Spreads")
+            axs[1].set_xlabel("Year")
+            axs[1].set_xticks(years)
+            axs[1].legend()
+
+        elif mode == 'Monthly':
+        # NEW: average spread per month across all years
+            spread_by_month = []
+            for m in range(1, 13):
+                sub = df_filtered[df_filtered['month'] == m]
+                if sub.empty:
+                    spread_by_month.append(0)
+                    continue
+                group = sub.groupby('hour')['value'].mean()
+                morning = group.loc[0:11]
+                afternoon = group.loc[12:23]
+                morning_pairs = find_ordered_spreads(morning, count)
+                afternoon_pairs = find_ordered_spreads(afternoon, count)
+                total = morning_pairs + afternoon_pairs
+                avg = sum(p[0] for p in total) / len(total) if total else 0
+                spread_by_month.append(avg)
+
+            axs[1].plot(range(1, 13), spread_by_month, marker='o', color='#0052A5')
+            axs[1].set_title("Monthly Average Spread")
+            axs[1].set_xlabel("Month")
+            axs[1].set_xticks(range(1, 13))
+            axs[1].set_xticklabels(["Jan", "Feb", "Mar", "Apr", "May", "Jun", 
+                                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"])
+
+        elif mode == 'Day of Week':
+        # NEW: average spread per weekday across all years
+            spread_by_day = []
+            for d in range(7):
+                sub = df_filtered[df_filtered['dayofweek'] == d]
+                if sub.empty:
+                    spread_by_day.append(0)
+                    continue
+                group = sub.groupby('hour')['value'].mean()
+                morning = group.loc[0:11]
+                afternoon = group.loc[12:23]
+                morning_pairs = find_ordered_spreads(morning, count)
+                afternoon_pairs = find_ordered_spreads(afternoon, count)
+                total = morning_pairs + afternoon_pairs
+                avg = sum(p[0] for p in total) / len(total) if total else 0
+                spread_by_day.append(avg)
+
+            axs[1].plot(range(7), spread_by_day, marker='o', color='#0052A5')
+            axs[1].set_title("Spread by Day of Week")
+            axs[1].set_xlabel("Day of Week")
+            axs[1].set_xticks(range(7))
+            axs[1].set_xticklabels(['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'])
+
+        axs[1].set_ylabel("€/MWh")
+        axs[1].grid(True, linestyle='--', alpha=0.5)
+
+
+
+    fig.canvas.draw_idle()
+
+def adjust_year_range(label):
+    if label == 'Past Data':
+        create_year_sliders(past_min, past_max)
+    else:
+        create_year_sliders(future_min, future_max)
+    update(None)
+
+create_year_sliders(past_min, past_max)
+slider_spread.on_changed(update)
+data_radio.on_clicked(adjust_year_range)
+view_radio.on_clicked(update)
+mode_radio.on_clicked(update)
+inflation_checkbox.on_clicked(update)
+
+
+update(None)
+plt.show()
+
+
+
+"""elif view == 'Yearly Spread':
+        axs[1].set_visible(True)
+        years = sorted(df_filtered['year'].unique())
+        avg_spreads = []
+
+        for y in years:
+            sub = df_filtered[df_filtered['year'] == y]
+            if sub.empty:
+                avg_spreads.append(0)
+                continue
+            group = sub.groupby('hour')['value'].mean()
+            morning = group.loc[0:11] if mode == 'Daily' else group
+            afternoon = group.loc[12:23] if mode == 'Daily' else group
+            morning_pairs = find_ordered_spreads(morning, count)
+            afternoon_pairs = find_ordered_spreads(afternoon, count)
+            total = morning_pairs + afternoon_pairs
+            avg = sum(p[0] for p in total) / len(total) if total else 0
+            avg_spreads.append(avg)
+
+        axs[1].plot(years, avg_spreads, marker='o', color='#0052A5')
+        for x, y in zip(years, avg_spreads):
+            axs[1].text(x, y + 0.5, f"{y:.1f}", ha='center', fontsize=8)
+
+        mean_spread = sum(avg_spreads) / len(avg_spreads) if avg_spreads else 0
+        axs[1].axhline(mean_spread, color='#00A573', linestyle='--', linewidth=2, label=f"Avg: {mean_spread:.1f}")
+
+        axs[1].set_title("Yearly Average of Selected Spreads")
+        axs[1].set_xlabel("Year")
+        axs[1].set_ylabel("€/MWh")
+        axs[1].set_xticks(years)
+        axs[1].grid(True, linestyle='--', alpha=0.5)
+        axs[1].legend()"""
+    
